@@ -196,11 +196,31 @@ def index():
                     <button onclick="fetch('/update', {{method:'POST'}}).then(r=>location.reload())">데이터 재수집</button>
                     </div>'''
 
+
+import threading
+
+# ... (기존 코드)
+
 @app.route('/update', methods=['POST'])
 def update_data():
-    success, msg = collect_and_save_data()
-    if success: return jsonify({'status': 'success', 'message': msg})
-    else: return jsonify({'status': 'error', 'message': msg}), 500
+    """백그라운드 스레드에서 데이터 수집을 시작하고 즉시 응답 반환"""
+    def task():
+        try:
+            print(">>> Background Update Started")
+            collect_and_save_data()
+            print(">>> Background Update Finished")
+        except Exception as e:
+            print(f">>> Background Update Error: {e}")
+
+    # 백그라운드 스레드 실행
+    thread = threading.Thread(target=task)
+    thread.daemon = True  # 메인 프로세스 종료 시 함께 종료
+    thread.start()
+
+    return jsonify({
+        'status': 'success', 
+        'message': '데이터 수집 요청이 서버에 전달되었습니다.\n작업은 백그라운드에서 진행되며 약 3~5분 소요됩니다.\n잠시 후 새로고침하여 확인해주세요.'
+    })
 
 @app.route('/api/data', methods=['GET'])
 def get_data_api():

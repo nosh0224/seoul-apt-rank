@@ -268,12 +268,12 @@
             fetch('/update', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => {
+                    document.getElementById('loadingOverlay').style.display = 'none';
                     if (data.status === 'success') {
                         alert(data.message);
-                        location.reload();
+                        // 데이터 수집에 시간이 걸리므로 즉시 새로고침 하지 않음
                     } else {
                         alert("오류 발생: " + data.message);
-                        document.getElementById('loadingOverlay').style.display = 'none';
                     }
                 })
                 .catch(err => {
