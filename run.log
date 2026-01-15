@@ -1,0 +1,5 @@
+=== Seoul Apartment Ranking Dashboard ===
+Found valid local data: seoul_apt_ranking.csv
+Starting dashboard...
+ * Serving Flask app 'apt_rank'
+ * Debug mode: off

@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>서울시 아파트 실거래 인사이트</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&amp;display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root { --primary-bg: #f3f4f6; --accent: #4F46E5; }
+        body { background-color: var(--primary-bg); font-family: 'Noto Sans KR', sans-serif; color: #111827; }
+        
+        /* Navbar */
+        .navbar { background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 1rem 0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        .navbar-brand { font-weight: 800; font-size: 1.4rem; color: white !important; }
+        .update-info { color: rgba(255,255,255,0.9); font-size: 0.85rem; margin-right: 15px; }
+        .btn-update { background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.4); font-size: 0.9rem; transition: .2s; }
+        .btn-update:hover { background: rgba(255,255,255,0.3); color: white; transform: translateY(-1px); }
+
+        /* Layout */
+        .main-container { max-width: 1400px; margin: 0 auto; padding: 2rem 1rem; }
+        .control-bar { background: white; border-radius: 16px; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+        .chart-card { background: white; border-radius: 16px; padding: 1.5rem; height: 100%; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); display: flex; flex-direction: column; }
+        .rank-card { background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05); }
+
+        /* Loading Overlay */
+        #loadingOverlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.7); z-index: 9999;
+            display: none; justify-content: center; align-items: center; flex-direction: column;
+            color: white; backdrop-filter: blur(5px);
+        }
+        .spinner-border { width: 3rem; height: 3rem; border-width: 0.25em; }
+        
+        /* Table & Badges */
+        .rank-badge { width: 28px; height: 28px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 0.9rem; }
+        .rank-1 { background: #FEF3C7; color: #D97706; }
+        .rank-2 { background: #F3F4F6; color: #4B5563; }
+        .rank-3 { background: #FFEDD5; color: #C2410C; }
+        .rank-other { color: #9CA3AF; }
+        .price-tag { font-weight: 700; color: var(--accent); background: #EEF2FF; padding: 4px 10px; border-radius: 12px; font-size: 0.9rem; }
+        .apt-link { cursor: pointer; color: #111827; transition: color 0.2s; text-decoration: underline; text-decoration-color: transparent; }
+        .apt-link:hover { color: #4F46E5; text-decoration-color: #4F46E5; }
+    </style>
+  </head>
+  <body>
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay">
+        <div class="spinner-border text-light mb-3" role="status"></div>
+        <h4 class="fw-bold">데이터 최신화 진행 중...</h4>
+        <p class="text-white-50">API 서버 상태에 따라 1~2분 정도 소요됩니다.</p>
+        <p class="small text-white-50">화면을 닫지 마세요.</p>
+    </div>
+
+    <!-- Detail Modal -->
+    <div class="modal fade" id="detailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content border-0 shadow-lg" style="border-radius: 16px;">
+                <div class="modal-header border-0 pb-0">
+                    <div>
+                        <h5 class="modal-title fw-bold" id="modalAptName">아파트명</h5>
+                        <small class="text-muted" id="modalLoc">위치 정보</small>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="modalLoading" class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-2 text-muted">상세 내역을 불러오는 중...</p>
+                    </div>
+                    <div id="modalContent" style="display:none;">
+                        <div class="d-flex justify-content-end mb-2">
+                            <select id="areaFilter" class="form-select form-select-sm" style="width: auto; min-width: 120px;" onchange="filterAndRenderHistory()">
+                                <option value="all">전체 면적</option>
+                            </select>
+                        </div>
+                        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                            <table class="table table-hover align-middle text-center small">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>계약일</th>
+                                        <th>거래금액</th>
+                                        <th>전용면적</th>
+                                        <th>층수</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="historyBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div id="modalError" class="alert alert-warning text-center m-3" style="display:none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container main-container py-0">
+            <span class="navbar-brand">🏙️ 서울시 아파트 실거래 인사이트</span>
+            <div class="d-flex align-items-center">
+                <span class="update-info d-none d-md-block" id="totalCountInfo">📊 조회: <span id="totalCount">0</span>건</span>
+                <span class="update-info d-none d-md-block">📅 업데이트: {{ last_updated }}</span>
+                <button class="btn btn-sm btn-update rounded-pill px-3" onclick="triggerUpdate()">
+                    🔄 데이터 최신화
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="main-container">
+        <!-- Controls -->
+        <div class="control-bar">
+            <!-- Row 1: Filters & Search -->
+            <div class="row g-3 align-items-end mb-2">
+                <div class="col-md-2">
+                    <label class="form-label fw-bold small text-muted">분석 년도</label>
+                    <select id="yearSelect" class="form-select" onchange="updateDashboard()">
+                        <option value="all">전체 (3년 합산)</option>
+                        {% for y in years %}
+                        <option value="{{ y }}">{{ y }}년</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-bold small text-muted">지역 (자치구)</label>
+                    <select id="districtSelect" class="form-select" onchange="updateDongOptions()">
+                        <option value="all">서울시 전체</option>
+                        {% for dist in districts %}
+                        <option value="{{ dist }}">{{ dist }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label fw-bold small text-muted">동 (법정동)</label>
+                    <select id="dongSelect" class="form-select" onchange="updateDashboard()" disabled>
+                        <option value="all">전체</option>
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-bold small text-muted">아파트명 검색</label>
+                    <input type="text" id="aptSearch" class="form-control" placeholder="아파트 이름 검색..." onkeyup="updateDashboard()">
+                </div>
+            </div>
+            <!-- Row 2: Price & Area Filters -->
+            <div class="row g-3 align-items-end">
+                <div class="col-md-3">
+                    <label class="form-label fw-bold small text-muted">가격대</label>
+                    <select id="priceSelect" class="form-select" onchange="updateDashboard()">
+                        <option value="all">모든 가격대</option>
+                        <option value="10억 미만">10억 미만</option>
+                        <option value="10억~15억">10억 ~ 15억</option>
+                        <option value="15억~20억">15억 ~ 20억</option>
+                        <option value="20억 이상">20억 이상</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label fw-bold small text-muted">평형 (전용면적)</label>
+                    <select id="areaMainSelect" class="form-select" onchange="updateDashboard()">
+                        <option value="all">전체</option>
+                        <option value="10">10평대 (40~50㎡)</option>
+                        <option value="20">20평대 (50~70㎡)</option>
+                        <option value="30">30평대 (70~102㎡)</option>
+                        <option value="40">40평대 (102~135㎡)</option>
+                        <option value="50">50평대 이상 (135㎡~)</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="row g-4 mb-4">
+            <div class="col-lg-5">
+                <div class="chart-card">
+                    <h6 class="fw-bold mb-3">📍 지역별 비중</h6>
+                    <div style="flex-grow:1; position:relative; min-height:220px;">
+                        <canvas id="districtChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-7">
+                <div class="chart-card">
+                    <h6 class="fw-bold mb-3">📈 연도별 거래량 추이</h6>
+                    <div style="flex-grow:1; position:relative; min-height:220px;">
+                        <canvas id="trendChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ranking -->
+        <div class="rank-card">
+            <div class="p-3 border-bottom d-flex justify-content-between align-items-center bg-white">
+                <h6 class="m-0 fw-bold">🏆 인기 아파트 TOP 20</h6>
+                <span class="badge bg-light text-dark border" id="rankBadge">0개 단지</span>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 text-center align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th width="7%">순위</th>
+                            <th width="13%">위치</th>
+                            <th width="30%" class="text-start ps-3">아파트명</th>
+                            <th width="10%">거래수</th>
+                            <th width="20%" class="text-end">평균 실거래가</th>
+                            <th width="20%" class="text-end pe-3">최근 거래일</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rankBody"></tbody>
+                </table>
+            </div>
+            <div id="noDataMsg" class="text-center p-5 text-muted" style="display:none;">
+                <h6>데이터가 없습니다.</h6>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const allData = {{ data_json | safe }};
+        const availableYears = {{ years | safe }};
+        let districtChart = null;
+        let trendChart = null;
+
+        // Pre-process District -> Dong Map
+        const districtToDong = {};
+        allData.forEach(d => {
+            const dist = d['자치구'];
+            const dong = d['법정동'];
+            if (!districtToDong[dist]) districtToDong[dist] = new Set();
+            districtToDong[dist].add(dong);
+        });
+
+        // Convert Sets to sorted Arrays
+        for (const dist in districtToDong) {
+            districtToDong[dist] = Array.from(districtToDong[dist]).sort();
+        }
+
+        function updateDongOptions() {
+            const distSelect = document.getElementById('districtSelect');
+            const dongSelect = document.getElementById('dongSelect');
+            const selectedDist = distSelect.value;
+
+            // Clear existing options
+            dongSelect.innerHTML = '<option value="all">전체</option>';
+
+            if (selectedDist === 'all') {
+                dongSelect.disabled = true;
+            } else {
+                dongSelect.disabled = false;
+                if (districtToDong[selectedDist]) {
+                    districtToDong[selectedDist].forEach(dong => {
+                        const option = document.createElement('option');
+                        option.value = dong;
+                        option.text = dong;
+                        dongSelect.appendChild(option);
+                    });
+                }
+            }
+            updateDashboard();
+        }
+
+        // API Update Call
+        function triggerUpdate() {
+            if (!confirm("데이터 최신화를 시작하시겠습니까?\n(약 1~2분 소요되며 기존 데이터는 덮어씌워집니다.)")) return;
+            
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            
+            fetch('/update', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert(data.message);
+                        location.reload();
+                    } else {
+                        alert("오류 발생: " + data.message);
+                        document.getElementById('loadingOverlay').style.display = 'none';
+                    }
+                })
+                .catch(err => {
+                    alert("서버 통신 오류: " + err);
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                });
+        }
+
+        function formatKoreanMoney(amount) {
+            if (!amount) return "0원";
+            const uk = Math.floor(amount / 10000); 
+            const cheon = Math.round(amount % 10000); 
+            let res = "";
+            if (uk > 0) res += `<span>${uk}</span>억 `;
+            if (cheon > 0) res += `${cheon.toLocaleString()}만원`;
+            if (uk===0 && cheon===0) return "0원";
+            return res;
+        }
+
+        function getPriceTier(price) {
+            if (price < 100000) return "10억 미만";
+            else if (price < 150000) return "10억~15억";
+            else if (price < 200000) return "15억~20억";
+            else return "20억 이상";
+        }
+
+        function getRankBadge(i) {
+            const rank = i + 1;
+            if (rank === 1) return `<div class="rank-badge rank-1">1</div>`;
+            if (rank === 2) return `<div class="rank-badge rank-2">2</div>`;
+            if (rank === 3) return `<div class="rank-badge rank-3">3</div>`;
+            return `<div class="rank-badge rank-other">${rank}</div>`;
+        }
+
+        function updateDashboard() {
+            const yearMode = document.getElementById('yearSelect').value;
+            const distMode = document.getElementById('districtSelect').value;
+            const dongMode = document.getElementById('dongSelect').value;
+            const priceMode = document.getElementById('priceSelect').value;
+            const areaMode = document.getElementById('areaMainSelect').value;
+            const searchText = document.getElementById('aptSearch').value.toLowerCase();
+
+            let filtered = allData.filter(d => {
+                const matchesYear = (yearMode === 'all' || d['년'] == yearMode);
+                const matchesDist = (distMode === 'all' || d['자치구'] === distMode);
+                const matchesDong = (dongMode === 'all' || d['법정동'] === dongMode);
+                const matchesSearch = (searchText === '' || d['아파트'].toLowerCase().includes(searchText));
+                
+                let matchesArea = true;
+                const areaFloor = Math.floor(d['전용면적']);
+                
+                if (areaMode === '10') matchesArea = (areaFloor >= 40 && areaFloor < 50);
+                else if (areaMode === '20') matchesArea = (areaFloor >= 50 && areaFloor < 70);
+                else if (areaMode === '30') matchesArea = (areaFloor >= 70 && areaFloor < 102);
+                else if (areaMode === '40') matchesArea = (areaFloor >= 102 && areaFloor < 135);
+                else if (areaMode === '50') matchesArea = (areaFloor >= 135);
+                
+                return matchesYear && matchesDist && matchesDong && matchesSearch && matchesArea;
+            });
+
+            let aggMap = {};
+            filtered.forEach(d => {
+                const areaFloor = Math.floor(d['전용면적']);
+                const key = d['자치구'] + '|' + d['법정동'] + '|' + d['아파트'] + (areaMode !== 'all' ? '|' + areaFloor : '');
+                if (!aggMap[key]) {
+                    aggMap[key] = { 
+                        '자치구': d['자치구'], 
+                        '법정동': d['법정동'], 
+                        '아파트': d['아파트'], 
+                        '총금액': 0, 
+                        '총건수': 0,
+                        '최근거래일': d['최근거래일'],
+                        '표시전용면적': areaFloor
+                    };
+                }
+                aggMap[key]['총건수'] += d['거래건수'];
+                aggMap[key]['총금액'] += d['평균거래금액'] * d['거래건수'];
+                if (d['최근거래일'] > aggMap[key]['최근거래일']) {
+                    aggMap[key]['최근거래일'] = d['최근거래일'];
+                }
+            });
+
+            let aggregated = Object.values(aggMap).map(d => {
+                d['거래건수'] = d['총건수'];
+                d['평균거래금액'] = d['총건수'] > 0 ? d['총금액'] / d['총건수'] : 0;
+                d['가격대'] = getPriceTier(d['평균거래금액']);
+                return d;
+            });
+
+            aggregated = aggregated.filter(d => priceMode === 'all' || d['가격대'] === priceMode);
+            aggregated.sort((a,b) => b['거래건수'] - a['거래건수'] || b['평균거래금액'] - a['평균거래금액']);
+
+            // Table
+            const tbody = document.getElementById('rankBody');
+            tbody.innerHTML = '';
+            document.getElementById('rankBadge').innerText = `${aggregated.length}개 단지`;
+            
+            const totalDealCount = aggregated.reduce((a,c)=>a+c['거래건수'],0);
+            if(document.getElementById('totalCount')) {
+                document.getElementById('totalCount').innerText = totalDealCount.toLocaleString() + '건';
+            }
+
+            if (aggregated.length === 0) {
+                document.getElementById('noDataMsg').style.display = 'block';
+            } else {
+                document.getElementById('noDataMsg').style.display = 'none';
+                aggregated.slice(0, 20).forEach((item, i) => {
+                    const areaInfo = areaMode !== 'all' ? `<br><small class="text-primary">${item['표시전용면적']}㎡</small>` : '';
+                    const row = `
+                        <tr>
+                            <td>${getRankBadge(i)}</td>
+                            <td><small class="text-muted">${item['자치구']}</small><br><strong>${item['법정동']}</strong></td>
+                            <td class="text-start ps-3">
+                                <strong class="apt-link" onclick="showHistory('${item['자치구']}', '${item['법정동']}', '${item['아파트']}')">${item['아파트']}</strong>
+                                ${areaInfo}
+                            </td>
+                            <td><span class="badge bg-secondary bg-opacity-10 text-dark">${item['거래건수']}건</span></td>
+                            <td class="text-end"><span class="price-tag">${formatKoreanMoney(item['평균거래금액'])}</span></td>
+                            <td class="text-end pe-3"><small class="text-muted">${item['최근거래일']}</small></td>
+                        </tr>`;
+                    tbody.innerHTML += row;
+                });
+            }
+            
+            drawCharts(aggregated, distMode, dongMode);
+        }
+
+        function drawCharts(data, distMode, dongMode) {
+            // District Chart
+            const ctxD = document.getElementById('districtChart').getContext('2d');
+            let dStats = {};
+            data.forEach(d => {
+                // If specific dong is selected, chart by Apartment Name, otherwise by Dong
+                // If specific district is selected (but not dong), chart by Dong
+                // If no district selected, chart by District
+                let k;
+                if (distMode === 'all') k = d['자치구'];
+                else if (dongMode === 'all') k = d['법정동'];
+                else k = d['아파트']; // Too many items? Handled by slice below
+                
+                dStats[k] = (dStats[k] || 0) + d['거래건수'];
+            });
+            const dLabels = Object.keys(dStats).sort((a,b)=>dStats[b]-dStats[a]).slice(0,6);
+            
+            if(districtChart) districtChart.destroy();
+            districtChart = new Chart(ctxD, {
+                type: 'doughnut',
+                data: {
+                    labels: dLabels,
+                    datasets: [{ data: dLabels.map(k=>dStats[k]), backgroundColor: ['#4F46E5','#10B981','#F59E0B','#EF4444','#8B5CF6','#6B7280'], borderWidth:0 }]
+                },
+                options: { responsive:true, maintainAspectRatio:false, cutout:'65%', plugins:{legend:{position:'right', labels:{boxWidth:10}}} }
+            });
+
+            // Trend Chart (Yearly)
+            // Re-filter from ALL data to show trend regardless of year selection
+            const ctxT = document.getElementById('trendChart').getContext('2d');
+            let tStats = {};
+            availableYears.forEach(y => tStats[y]=0);
+            
+            const pMode = document.getElementById('priceSelect').value;
+            const dSearch = document.getElementById('aptSearch').value.toLowerCase();
+            
+            allData.forEach(d => {
+                if (distMode !== 'all' && d['자치구'] !== distMode) return;
+                if (dongMode !== 'all' && d['법정동'] !== dongMode) return; // Add dong filter to trend chart
+                if (pMode !== 'all' && getPriceTier(d['평균거래금액']) !== pMode) return;
+                if (dSearch !== '' && !d['아파트'].toLowerCase().includes(dSearch)) return;
+
+                tStats[d['년']] += d['거래건수'];
+            });
+            
+            if(trendChart) trendChart.destroy();
+            trendChart = new Chart(ctxT, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(tStats),
+                    datasets: [{ label:'거래량', data:Object.values(tStats), backgroundColor:'#818cf8', borderRadius:4 }]
+                },
+                options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{grid:{display:false}}, y:{beginAtZero:true}} }
+            });
+        }
+
+        // Modal Logic
+        let detailModal = null;
+        let currentHistoryData = []; // Store current modal data for filtering
+
+        document.addEventListener('DOMContentLoaded', () => {
+             detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
+        });
+
+        function showHistory(gu, dong, apt) {
+            document.getElementById('modalAptName').innerText = apt;
+            document.getElementById('modalLoc').innerText = `${gu} ${dong}`;
+            
+            document.getElementById('modalLoading').style.display = 'block';
+            document.getElementById('modalContent').style.display = 'none';
+            document.getElementById('modalError').style.display = 'none';
+            
+            // Reset Filter
+            document.getElementById('areaFilter').innerHTML = '<option value="all">전체 면적</option>';
+            currentHistoryData = [];
+
+            detailModal.show();
+            
+            fetch(`/api/history?apt_name=${encodeURIComponent(apt)}&dong=${encodeURIComponent(dong)}`)
+                .then(res => res.json())
+                .then(res => {
+                    document.getElementById('modalLoading').style.display = 'none';
+                    if(res.status === 'success') {
+                        currentHistoryData = res.data; // Store data
+                        
+                        if (currentHistoryData.length === 0) {
+                             document.getElementById('modalError').innerText = "상세 거래 내역이 없습니다.";
+                             document.getElementById('modalError').style.display = 'block';
+                             return;
+                        }
+
+                        // Setup Area Filter Options (using Math.floor)
+                        const uniqueAreas = [...new Set(currentHistoryData.map(d => Math.floor(d['전용면적'])))].sort((a,b) => a-b);
+                        const areaSelect = document.getElementById('areaFilter');
+                        uniqueAreas.forEach(area => {
+                            if (area > 0) {
+                                const opt = document.createElement('option');
+                                opt.value = area;
+                                opt.text = `${area}㎡`;
+                                areaSelect.appendChild(opt);
+                            }
+                        });
+
+                        document.getElementById('modalContent').style.display = 'block';
+                        filterAndRenderHistory(); // Initial Render
+
+                    } else {
+                        document.getElementById('modalError').innerText = res.message || "데이터를 불러오지 못했습니다. '데이터 최신화'를 진행해주세요.";
+                        document.getElementById('modalError').style.display = 'block';
+                    }
+                })
+                .catch(err => {
+                    document.getElementById('modalLoading').style.display = 'none';
+                    document.getElementById('modalError').innerText = "서버 통신 오류가 발생했습니다.";
+                    document.getElementById('modalError').style.display = 'block';
+                });
+        }
+
+        function filterAndRenderHistory() {
+            const selectedArea = document.getElementById('areaFilter').value;
+            const tbody = document.getElementById('historyBody');
+            tbody.innerHTML = '';
+            
+            let displayData = currentHistoryData;
+            
+            if (selectedArea !== 'all') {
+                displayData = currentHistoryData.filter(d => Math.floor(d['전용면적']) == selectedArea);
+            }
+            
+            if (displayData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3 text-muted">해당 면적의 거래 내역이 없습니다.</td></tr>';
+                return;
+            }
+
+            displayData.forEach(d => {
+                const dateStr = d['거래일자'] || `${d['년']}-${d['월']}-${d['일']}`;
+                const area = d['전용면적'] ? `${Math.floor(d['전용면적'])}㎡` : '-';
+                const floor = d['층'] ? `${d['층']}층` : '-';
+                const price = formatKoreanMoney(d['거래금액']);
+                
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${dateStr}</td>
+                        <td class="fw-bold text-primary">${price}</td>
+                        <td>${area}</td>
+                        <td>${floor}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        updateDashboard();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>
