@@ -12,10 +12,10 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 from flask import Flask, render_template, jsonify, request
 from threading import Timer
+import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.relativedelta import relativedelta
-
-# ... imports remain the same ...
 
 # Load environment variables
 load_dotenv()
@@ -40,19 +40,26 @@ SEOUL_DISTRICTS = {
 # Initialize Flask App (Global Scope for Gunicorn)
 app = Flask(__name__, template_folder='templates')
 
+# Global Status for Background Task
+UPDATE_STATUS = {'running': False, 'message': ''}
+
 def fetch_data(lawd_cd, deal_ymd):
-    # ... implementation remains the same ...
-    if not API_KEY: return None
+    if not API_KEY: 
+        print(f"Error: API Key is missing", flush=True)
+        return None
     full_url = f"{API_URL}?serviceKey={API_KEY}&LAWD_CD={lawd_cd}&DEAL_YMD={deal_ymd}&numOfRows=9999&pageNo=1"
     try:
         response = requests.get(full_url, timeout=30)
         response.encoding = 'utf-8'
-        if response.status_code != 200: return None
+        if response.status_code != 200:
+            print(f"[API Error] Status: {response.status_code} for {lawd_cd}/{deal_ymd}", flush=True)
+            return None
         return response.text
-    except Exception: return None
+    except Exception as e:
+        print(f"[API Exception] {lawd_cd}/{deal_ymd}: {e}", flush=True)
+        return None
 
 def parse_xml_to_df(xml_data, district_name):
-    # ... implementation remains the same ...
     if not xml_data: return pd.DataFrame()
     try:
         root = ET.fromstring(xml_data)
@@ -86,9 +93,15 @@ def get_price_tier(price):
     elif price < 200000: return "15억~20억"
     else: return "20억 이상"
 
+def get_area_tier(area):
+    if area < 50: return 10
+    elif area < 70: return 20
+    elif area < 102: return 30
+    elif area < 135: return 40
+    else: return 50
+
 def analyze_data(df):
     if df.empty: return pd.DataFrame()
-    # Group by District, Dong, Apt, Year, AND Area
     grouped = df.groupby(["자치구", "법정동", "아파트", "년", "전용면적"]).agg(
         거래건수=("거래금액", "count"),
         평균거래금액=("거래금액", "mean"),
@@ -96,10 +109,11 @@ def analyze_data(df):
     ).reset_index()
     grouped = grouped.sort_values(by="거래건수", ascending=False)
     grouped["가격대"] = grouped["평균거래금액"].apply(get_price_tier)
+    grouped["평형대"] = grouped["전용면적"].apply(get_area_tier)
     return grouped
 
 def collect_and_save_data():
-    print(">>> Starting Data Collection...")
+    print(">>> Starting Data Collection...", flush=True)
     end_date = datetime.date.today()
     start_date = end_date - relativedelta(years=3)
     months = []
@@ -112,153 +126,117 @@ def collect_and_save_data():
     for district_code, district_name in SEOUL_DISTRICTS.items():
         for m in months: tasks.append((district_code, district_name, m))
             
+    print(f">>> Total Tasks to fetch: {len(tasks)}", flush=True)
     all_dfs = []
+    completed = 0
     with ThreadPoolExecutor(max_workers=12) as executor:
         future_to_task = {executor.submit(fetch_data, c, y): (c, n, y) for c, n, y in tasks}
         for future in as_completed(future_to_task):
+            completed += 1
+            if completed % 100 == 0:
+                print(f">>> Progress: {completed}/{len(tasks)} ({completed/len(tasks)*100:.1f}%)", flush=True)
+            
             _, name, _ = future_to_task[future]
             try:
                 xml_txt = future.result()
                 if xml_txt:
                     df = parse_xml_to_df(xml_txt, name)
                     if not df.empty: all_dfs.append(df)
-            except: pass
+            except Exception as e: 
+                print(f"[Task Error] {name}: {e}", flush=True)
 
+    print(f">>> Fetching Finished. Blocks found: {len(all_dfs)}", flush=True)
     if not all_dfs: return False, "데이터 수집 실패: API 응답이 없거나 네트워크 오류입니다."
     try:
         full_df = pd.concat(all_dfs, ignore_index=True)
-        # Save raw data for detail view
+        print(f">>> Saving raw data ({len(full_df)} rows)...", flush=True)
         full_df.to_csv(RAW_CSV_FILENAME, index=False, encoding='utf-8-sig')
         
+        print(">>> Analyzing & Saving ranking data...", flush=True)
         analyzed_df = analyze_data(full_df)
         analyzed_df.to_csv(CSV_FILENAME, index=False, encoding='utf-8-sig')
+        print(">>> All Data Processes Completed Successfully!", flush=True)
         return True, f"수집 완료: 총 {len(full_df)}건의 거래 데이터 분석됨."
-    except Exception as e: return False, f"데이터 처리 중 오류: {str(e)}"
+    except Exception as e: 
+        print(f"[Save Error] {e}", flush=True)
+        return False, f"데이터 처리 중 오류: {str(e)}"
 
 def validate_data_file():
-    """Checks if the CSV file exists and has the required columns."""
-    if not os.path.exists(CSV_FILENAME):
-        return False
+    if not os.path.exists(CSV_FILENAME): return False
     try:
         df = pd.read_csv(CSV_FILENAME)
-        if df.empty or '년' not in df.columns or '자치구' not in df.columns:
-            return False
-        return True
-    except:
-        return False
+        return not df.empty and '년' in df.columns
+    except: return False
 
-# Routes
 @app.route('/')
 def index():
-    # Validate file before loading
     if not validate_data_file():
         return '''<div style="text-align:center; padding:50px; font-family:sans-serif;">
             <h1>데이터 파일이 없습니다.</h1>
-            <p>로컬에서 수집된 데이터(seoul_apt_ranking.csv)를 함께 배포해주세요.</p>
-            <p>지금 바로 서버에서 수집을 시작할 수도 있습니다. (1~2분 소요)</p>
-            <button onclick="this.disabled=true; this.innerText='데이터 수집 중...'; fetch('/update', {method:'POST'}).then(r=>location.reload())" 
-                    style="padding:15px 30px; cursor:pointer; background:#4F46E5; color:white; border:none; border-radius:8px; font-size:16px; font-weight:bold;">
-                🔄 데이터 수집 및 복구 시작
+            <p>서버에서 수집을 시작해주세요. (약 3~5분 소요)</p>
+            <button onclick="this.disabled=true; this.innerText='수집 시작됨...'; fetch('/update', {method:'POST'})" 
+                    style="padding:15px 30px; cursor:pointer; background:#4F46E5; color:white; border:none; border-radius:8px;">
+                🔄 데이터 수집 시작
             </button>
         </div>'''
     
     try:
-        # Get file modification time
         mtime = os.path.getmtime(CSV_FILENAME)
         last_updated = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-        
-        df = pd.read_csv(CSV_FILENAME)
-        df = df.fillna(0)
+        df = pd.read_csv(CSV_FILENAME).fillna(0)
         records = df.to_dict('records')
         years_list = sorted(df['년'].unique().tolist())
         district_list = sorted(list(SEOUL_DISTRICTS.values()))
-        
-        return render_template('index.html', 
-                             data_json=json.dumps(records), 
-                             years=years_list, 
-                             districts=district_list,
-                             last_updated=last_updated)
-    except Exception as e:
-        return f"Error: {str(e)}"
-        mod_time = os.path.getmtime(CSV_FILENAME)
-        last_updated = datetime.datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
-        
-        return render_template('index.html', 
-                                districts=district_list, 
-                                years=years_list, 
-                                data_json=json.dumps(records, ensure_ascii=False),
-                                last_updated=last_updated)
-    except Exception as e:
-        return f'''<div style="padding:20px;">
-                    <h3>처리 중 오류가 발생했습니다.</h3>
-                    <pre>{str(e)}</pre>
-                    <p>파일 형식이 올바르지 않은 것 같습니다. 데이터를 초기화하시겠습니까?</p>
-                    <button onclick="fetch('/update', {{method:'POST'}}).then(r=>location.reload())">데이터 재수집</button>
-                    </div>'''
-
-
-import threading
-
-# ... (기존 코드)
+        return render_template('index.html', data_json=json.dumps(records), years=years_list, districts=district_list, last_updated=last_updated)
+    except Exception as e: return f"Error: {str(e)}"
 
 @app.route('/update', methods=['POST'])
 def update_data():
-    """백그라운드 스레드에서 데이터 수집을 시작하고 즉시 응답 반환"""
+    global UPDATE_STATUS
+    if UPDATE_STATUS['running']:
+        return jsonify({'status': 'error', 'message': '이미 데이터 수집이 진행 중입니다. 잠시 후 다시 시도해주세요.'})
+
     def task():
+        global UPDATE_STATUS
         try:
-            print(">>> Background Update Started")
-            collect_and_save_data()
-            print(">>> Background Update Finished")
+            UPDATE_STATUS['running'] = True
+            UPDATE_STATUS['message'] = '데이터 수집 중...'
+            print(">>> Background Update Started", flush=True)
+            
+            success, msg = collect_and_save_data()
+            
+            UPDATE_STATUS['running'] = False
+            UPDATE_STATUS['message'] = 'success' if success else f'error: {msg}'
+            print(f">>> Background Update Finished: {msg}", flush=True)
         except Exception as e:
-            print(f">>> Background Update Error: {e}")
+            traceback.print_exc()
+            UPDATE_STATUS['running'] = False
+            UPDATE_STATUS['message'] = f'error: {str(e)}'
 
-    # 백그라운드 스레드 실행
     thread = threading.Thread(target=task)
-    thread.daemon = True  # 메인 프로세스 종료 시 함께 종료
+    thread.daemon = True 
     thread.start()
+    return jsonify({'status': 'success', 'message': '수집 작업이 시작되었습니다. 완료 시 알림이 뜹니다.'})
 
-    return jsonify({
-        'status': 'success', 
-        'message': '데이터 수집 요청이 서버에 전달되었습니다.\n작업은 백그라운드에서 진행되며 약 3~5분 소요됩니다.\n잠시 후 새로고침하여 확인해주세요.'
-    })
+@app.route('/update/status', methods=['GET'])
+def get_update_status():
+    return jsonify(UPDATE_STATUS)
 
 @app.route('/api/data', methods=['GET'])
 def get_data_api():
-    """External API endpoint to fetch the raw data as JSON."""
-    if not validate_data_file():
-        return jsonify({'status': 'error', 'message': 'Data file not found'}), 404
-    try:
-        df = pd.read_csv(CSV_FILENAME)
-        df = df.fillna(0)
-        records = df.to_dict('records')
-        return jsonify({'status': 'success', 'count': len(records), 'data': records})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if not validate_data_file(): return jsonify({'status': 'error'}), 404
+    df = pd.read_csv(CSV_FILENAME).fillna(0)
+    return jsonify({'status': 'success', 'data': df.to_dict('records')})
 
 @app.route('/api/history', methods=['GET'])
 def get_apt_history():
-    """Returns detailed trade history for a specific apartment."""
     apt_name = request.args.get('apt_name')
     dong = request.args.get('dong')
-    
-    if not os.path.exists(RAW_CSV_FILENAME):
-            return jsonify({'status': 'error', 'message': '상세 데이터 파일이 없습니다. 데이터를 업데이트해주세요.'}), 404
-            
-    try:
-        df = pd.read_csv(RAW_CSV_FILENAME)
-        # Filter by Apt Name and Dong
-        mask = (df['아파트'] == apt_name) & (df['법정동'] == dong)
-        filtered = df[mask].fillna(0)
-        
-        # Sort by Date desc
-        if '거래일자' in filtered.columns:
-            filtered = filtered.sort_values(by='거래일자', ascending=False)
-        
-        records = filtered.to_dict('records')
-        return jsonify({'status': 'success', 'data': records})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if not os.path.exists(RAW_CSV_FILENAME): return jsonify({'status': 'error'}), 404
+    df = pd.read_csv(RAW_CSV_FILENAME)
+    mask = (df['아파트'] == apt_name) & (df['법정동'] == dong)
+    filtered = df[mask].fillna(0).sort_values(by='거래일자', ascending=False)
+    return jsonify({'status': 'success', 'data': filtered.to_dict('records')})
 
 if __name__ == "__main__":
-    # For local development
     app.run(host='0.0.0.0', port=5000)

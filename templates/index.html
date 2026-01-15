@@ -158,7 +158,7 @@
                     <label class="form-label fw-bold small text-muted">평형 (전용면적)</label>
                     <select id="areaMainSelect" class="form-select" onchange="updateDashboard()">
                         <option value="all">전체</option>
-                        <option value="10">10평대 (40~50㎡)</option>
+                        <option value="10">10평대 이하 (~50㎡)</option>
                         <option value="20">20평대 (50~70㎡)</option>
                         <option value="30">30평대 (70~102㎡)</option>
                         <option value="40">40평대 (102~135㎡)</option>
@@ -260,25 +260,52 @@
         }
 
         // API Update Call
+        let pollInterval = null;
+
         function triggerUpdate() {
-            if (!confirm("데이터 최신화를 시작하시겠습니까?\n(약 1~2분 소요되며 기존 데이터는 덮어씌워집니다.)")) return;
+            if (!confirm("데이터 최신화를 시작하시겠습니까?\n(약 3~5분 소요되며 작업 중에는 페이지를 닫지 마세요.)")) return;
             
             document.getElementById('loadingOverlay').style.display = 'flex';
             
             fetch('/update', { method: 'POST' })
                 .then(response => response.json())
                 .then(data => {
-                    document.getElementById('loadingOverlay').style.display = 'none';
                     if (data.status === 'success') {
-                        alert(data.message);
-                        // 데이터 수집에 시간이 걸리므로 즉시 새로고침 하지 않음
+                        // Start Polling
+                        pollInterval = setInterval(checkUpdateStatus, 3000);
                     } else {
                         alert("오류 발생: " + data.message);
+                        document.getElementById('loadingOverlay').style.display = 'none';
                     }
                 })
                 .catch(err => {
                     alert("서버 통신 오류: " + err);
                     document.getElementById('loadingOverlay').style.display = 'none';
+                });
+        }
+
+        function checkUpdateStatus() {
+            fetch('/update/status')
+                .then(res => res.json())
+                .then(status => {
+                    if (status.running) {
+                        // Still running...
+                        console.log("Updating...");
+                    } else {
+                        // Finished
+                        clearInterval(pollInterval);
+                        document.getElementById('loadingOverlay').style.display = 'none';
+                        
+                        if (status.message === 'success') {
+                            alert("데이터 최신화가 완료되었습니다!");
+                            location.reload();
+                        } else {
+                            alert("업데이트 중 오류가 발생했습니다.\n" + status.message);
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error("Polling error:", err);
                 });
         }
 
@@ -322,22 +349,21 @@
                 const matchesDong = (dongMode === 'all' || d['법정동'] === dongMode);
                 const matchesSearch = (searchText === '' || d['아파트'].toLowerCase().includes(searchText));
                 
+                // 서버에서 계산된 '평형대' 컬럼 사용 (10, 20, 30, 40, 50)
                 let matchesArea = true;
-                const areaFloor = Math.floor(d['전용면적']);
-                
-                if (areaMode === '10') matchesArea = (areaFloor >= 40 && areaFloor < 50);
-                else if (areaMode === '20') matchesArea = (areaFloor >= 50 && areaFloor < 70);
-                else if (areaMode === '30') matchesArea = (areaFloor >= 70 && areaFloor < 102);
-                else if (areaMode === '40') matchesArea = (areaFloor >= 102 && areaFloor < 135);
-                else if (areaMode === '50') matchesArea = (areaFloor >= 135);
+                if (areaMode !== 'all') {
+                    matchesArea = (d['평형대'] == areaMode);
+                }
                 
                 return matchesYear && matchesDist && matchesDong && matchesSearch && matchesArea;
             });
 
             let aggMap = {};
             filtered.forEach(d => {
-                const areaFloor = Math.floor(d['전용면적']);
-                const key = d['자치구'] + '|' + d['법정동'] + '|' + d['아파트'] + (areaMode !== 'all' ? '|' + areaFloor : '');
+                const areaVal = d['평형대']; 
+                // 키 생성: 평형 선택 시 평형별로 분리, 전체 선택 시 아파트별 통합
+                const key = d['자치구'] + '|' + d['법정동'] + '|' + d['아파트'] + (areaMode !== 'all' ? '|' + areaVal : '');
+                
                 if (!aggMap[key]) {
                     aggMap[key] = { 
                         '자치구': d['자치구'], 
@@ -346,7 +372,7 @@
                         '총금액': 0, 
                         '총건수': 0,
                         '최근거래일': d['최근거래일'],
-                        '표시전용면적': areaFloor
+                        '표시전용면적': Math.floor(d['전용면적']) // 대표 면적
                     };
                 }
                 aggMap[key]['총건수'] += d['거래건수'];
