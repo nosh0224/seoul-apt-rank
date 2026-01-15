@@ -40,8 +40,26 @@ SEOUL_DISTRICTS = {
 # Initialize Flask App (Global Scope for Gunicorn)
 app = Flask(__name__, template_folder='templates')
 
-# Global Status for Background Task
-UPDATE_STATUS = {'running': False, 'message': ''}
+STATUS_FILE = "server_status.json"
+
+def save_status(data):
+    try:
+        with open(STATUS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Status Save Error] {e}")
+
+def load_status():
+    if not os.path.exists(STATUS_FILE):
+        return {'running': False, 'message': ''}
+    try:
+        with open(STATUS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {'running': False, 'message': ''}
+
+# Initialize status file
+save_status({'running': False, 'message': ''})
 
 def fetch_data(lawd_cd, deal_ymd):
     if not API_KEY: 
@@ -192,26 +210,23 @@ def index():
 
 @app.route('/update', methods=['POST'])
 def update_data():
-    global UPDATE_STATUS
-    if UPDATE_STATUS['running']:
+    current_status = load_status()
+    if current_status['running']:
         return jsonify({'status': 'error', 'message': '이미 데이터 수집이 진행 중입니다. 잠시 후 다시 시도해주세요.'})
 
     def task():
-        global UPDATE_STATUS
         try:
-            UPDATE_STATUS['running'] = True
-            UPDATE_STATUS['message'] = '데이터 수집 중...'
+            save_status({'running': True, 'message': '데이터 수집 중...'})
             print(">>> Background Update Started", flush=True)
             
             success, msg = collect_and_save_data()
             
-            UPDATE_STATUS['running'] = False
-            UPDATE_STATUS['message'] = 'success' if success else f'error: {msg}'
+            status_msg = 'success' if success else f'error: {msg}'
+            save_status({'running': False, 'message': status_msg})
             print(f">>> Background Update Finished: {msg}", flush=True)
         except Exception as e:
             traceback.print_exc()
-            UPDATE_STATUS['running'] = False
-            UPDATE_STATUS['message'] = f'error: {str(e)}'
+            save_status({'running': False, 'message': f'error: {str(e)}'})
 
     thread = threading.Thread(target=task)
     thread.daemon = True 
@@ -220,7 +235,7 @@ def update_data():
 
 @app.route('/update/status', methods=['GET'])
 def get_update_status():
-    return jsonify(UPDATE_STATUS)
+    return jsonify(load_status())
 
 @app.route('/api/data', methods=['GET'])
 def get_data_api():
